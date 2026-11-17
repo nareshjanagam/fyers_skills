@@ -164,3 +164,58 @@ print(f"PCR: {pcr:.2f}  ({'bearish' if pcr > 1.2 else 'bullish' if pcr < 0.8 els
 Returns `marketStatus[]`: `{exchange, segment, market_type (NORMAL/ODD_LOT/AUCTION/...),
 status (OPEN/CLOSE/PREOPEN/POSTCLOSE_START/...)}`. Check this before assuming the market
 is tradable.
+
+## Expired F&O data — GET `/data/history/fno/expired/...`
+
+For backtesting on contracts that no longer trade (active contracts are **not** supported).
+Three-step flow; SDK methods in brackets, `FyersClient` wrappers after:
+
+1. `/expiry-dates` [`expiry_dates`] -> `expiry_dates()` — params `symbol` (underlying, e.g.
+   `NSE:NIFTY50-INDEX`), `range_from`, `range_to`, `date_format` (0 epoch / 1 yyyy-mm-dd).
+   Max 366-day range. Returns `data.expiry_dates.futures` / `.options`.
+2. `/underlying-symbols` [`history_underlying_symbols`] -> `expired_contracts()` — params
+   `symbol`, `expiry_date` (must come from step 1). Returns `data.contracts.futures` / `.options`.
+   **Copy contract symbols exactly as returned** — don't hand-build them (the response's
+   `data.symbol` is the bare name, e.g. `SBIN`).
+3. `/historical-data` [`fno_historical_data`] -> `expired_fo_data()` (raw) or
+   `expired_fo_rows()` (dicts, auto-chunked) — params `symbol`, `resolution`, `date_format`,
+   `range_from`, `range_to`, `include_oi` (0/1), `include_greeks` (0/1, CE/PE only).
+
+```python
+fc = FyersClient()
+exp = fc.expiry_dates("NSE:NIFTY50-INDEX", "2025-01-01", "2025-03-31")["data"]["expiry_dates"]["options"]
+syms = fc.expired_contracts("NSE:NIFTY50-INDEX", exp[0])["data"]["contracts"]["options"]
+rows = fc.expired_fo_rows(syms[0], "60", "2025-03-20", "2025-03-27", include_oi=True, include_greeks=True)
+```
+
+**Resolutions:** `5S` (last 30 trading days only), minutes `1,2,3,5,10,15,20,30,45,60,120,180,240`
+(max **100 days** per request), `1D`, `1W`; `1M` is listed but "coming soon".
+
+**Availability:** NSE from 10 Oct 2018, BSE from 7 Aug 2023, MCX from 11 Oct 2018. Greeks not
+available for MCX; NCOM has no F&O history. Earlier requests fail.
+
+**Plan limits:** Standard = daily candles for the last ~2 years, intraday capped at **10
+requests/day**. Prime = 7+ years daily, intraday under Prime rate limits. Check the plan before
+planning a large intraday backtest.
+
+**Candle columns:** `timestamp, open, high, low, close, volume`, then `open_interest` (if
+`include_oi=1`), then IV, `delta`, `gamma`, `theta`, `vega` (if `include_greeks=1`). Always map
+by the response's `columns` array — the IV column is documented as `implied_volatility` but the
+sample shows `iv`. IV is in percent (11.87 = 11.87%).
+
+**Pitfalls:**
+- `s == "no_data"` is a valid empty result (`candles: []`), not an error.
+- OI and Greeks can be `null` per candle — the API does not forward-fill or zero-fill; handle it.
+- `include_greeks` must be 0 or 1 (else HTTP 422, `code -50`); not valid for futures.
+- Range over the resolution limit returns an error — `expired_fo_rows()` chunks for you.
+- Each chunk is a request: mind the Standard plan's 10 intraday requests/day.
+- **Verified live (Mar-2025 NIFTY):** works with the `app_id:token` header, for options AND futures
+  (`NSE:NIFTY25MARFUT`, no greeks), at `5`, `60` and `1D`. Far-OTM strikes (e.g. `NIFTY25MAR8000CE`)
+  return `no_data` — pick strikes near the traded range. `expired_contracts()` can list the same
+  symbol twice (weekly + monthly expiry share a name) — dedupe with `sorted(set(...))`.
+- Greeks/IV on the final expiry day can look extreme (IV 170-300, delta 1) as time value goes to
+  zero — filter or ignore the last session's greeks in backtests.
+- **Greeks verified live:** across NIFTY CE/PE (ITM/OTM), 60m candles over Mar-2025, `implied_volatility`,
+  `delta`, `gamma`, `theta`, `vega` had zero nulls and were internally consistent (CE/PE at the same
+  strike share IV/gamma/theta/vega; deltas sum to ~1). So `include_greeks=True` can drive delta-based
+  strike selection (e.g. sell the ~0.15-delta strike) without computing greeks yourself.

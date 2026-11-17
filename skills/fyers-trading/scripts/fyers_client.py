@@ -22,6 +22,7 @@ CLI smoke test (read-only):
 """
 from __future__ import annotations
 
+import datetime as dt
 import json
 import sys
 import time
@@ -138,6 +139,90 @@ class FyersClient:
         q = urllib.parse.urlencode(params)
         return self._get(f"{DATA_BASE}/options-chain-v3?{q}")
 
+    # --- expired F&O (history/fno/expired) -------------------------------------
+    def expiry_dates(self, symbol: str, range_from: str, range_to: str) -> dict:
+        """Past futures/options expiries for an underlying (max 366-day range, yyyy-mm-dd)."""
+        q = urllib.parse.urlencode({"symbol": symbol, "range_from": range_from,
+                                    "range_to": range_to, "date_format": 1})
+        return self._get(f"{DATA_BASE}/history/fno/expired/expiry-dates?{q}")
+
+    def expired_contracts(self, symbol: str, expiry_date: str) -> dict:
+        """Expired contract symbols for an underlying + an expiry from expiry_dates()."""
+        q = urllib.parse.urlencode({"symbol": symbol, "expiry_date": expiry_date})
+        return self._get(f"{DATA_BASE}/history/fno/expired/underlying-symbols?{q}")
+
+    def expired_fo_data(self, symbol: str, resolution: str, range_from: str, range_to: str,
+                        include_oi: bool = False, include_greeks: bool = False) -> dict:
+        """Raw candles for ONE expired contract. Symbol must be copied from expired_contracts().
+        Greeks are CE/PE only (not futures, not MCX). Read values via the `columns` array."""
+        q = urllib.parse.urlencode({
+            "symbol": symbol, "resolution": resolution, "date_format": 1,
+            "range_from": range_from, "range_to": range_to,
+            "include_oi": int(include_oi), "include_greeks": int(include_greeks),
+        })
+        return self._get(f"{DATA_BASE}/history/fno/expired/historical-data?{q}")
+
+    def expired_fo_rows(self, symbol: str, resolution: str, range_from: str, range_to: str,
+                        include_oi: bool = False, include_greeks: bool = False) -> list[dict]:
+        """Candles as a list of dicts keyed by `columns`, auto-chunked to <=100 days for
+        minute resolutions. `no_data` -> []. Null OI/greeks stay None (never zero-filled)."""
+        step = 100 if resolution.isdigit() else 366
+        start = dt.date.fromisoformat(range_from)
+        end = dt.date.fromisoformat(range_to)
+        rows: list[dict] = []
+        while start <= end:
+            stop = min(start + dt.timedelta(days=step - 1), end)
+            r = self.expired_fo_data(symbol, resolution, start.isoformat(), stop.isoformat(),
+                                     include_oi, include_greeks)
+            if r.get("s") == "error":
+                raise RuntimeError(f"expired_fo_data error: {r.get('code')} {r.get('message')} {r.get('data')}")
+            cols = r.get("columns") or []
+            rows += [dict(zip(cols, c)) for c in r.get("candles") or []]
+            start = stop + dt.timedelta(days=1)
+        return rows
+
+    # --- screeners (GET {API_BASE}/screeners/...; Prime: 10/s, 500/min; Standard: 50 requests/day) ---
+    def screeners_config(self) -> dict:
+        """Catalogue: standard/candlestick/technical screener ids, columns and column groups,
+        universes (incl. futures/options), timeframes, option_types, expiry keys and epochs."""
+        return self._get(f"{API_BASE}/screeners/config")
+
+    def screeners_standard(self, screener_id: str, fields: list[str] | None = None,
+                           universe: str | None = None, timeframe: str | None = None,
+                           order_by: str | None = None, order: str | None = None,
+                           expiry: int | None = None, option_type: str | None = None) -> list[dict]:
+        """Run a standard screener -> list of row dicts (keys from the response header).
+
+        Max 10 `fields` (symbolticker is always returned and not counted); with no `fields` you get only
+        symbolticker. Max 500 rows, no paging (limit/offset/page return 400). Parameter names are
+        case-sensitive. Use only parameters listed for the screener in screeners_config() (e.g. timeframe),
+        otherwise the API returns 400. An empty result is valid."""
+        q = {"screener_id": screener_id, "fields": ",".join(fields) if fields else None,
+             "universe": universe, "timeframe": timeframe, "order_by": order_by, "order": order,
+             "expiry": expiry, "option_type": option_type}
+        r = self._get(f"{API_BASE}/screeners/standard?" + urllib.parse.urlencode({k: v for k, v in q.items() if v is not None}))
+        return self._screener_rows(r)
+
+    def screeners_candlestick(self, screener_id: str) -> list[dict]:
+        """Run a candlestick-pattern screener (only screener_id is accepted)."""
+        return self._screener_rows(self._get(f"{API_BASE}/screeners/candlestick?" + urllib.parse.urlencode({"screener_id": screener_id})))
+
+    def screeners_technical(self, screener_id: str) -> list[dict]:
+        """Run a technical screener (only screener_id is accepted)."""
+        return self._screener_rows(self._get(f"{API_BASE}/screeners/technical?" + urllib.parse.urlencode({"screener_id": screener_id})))
+
+    @staticmethod
+    def _screener_rows(r: dict) -> list[dict]:
+        if r.get("s") != "ok":
+            raise RuntimeError(f"screener error: {r.get('code')} {r.get('message')}")
+        d = r.get("data", r)
+        header = d.get("header") or []
+        names = [h["unique_key"] if isinstance(h, dict) else h for h in header]
+        body = d.get("body")
+        if not names and d.get("columns"):
+            names = d["columns"]
+        return [dict(zip(names, row)) for row in (body if body is not None else d.get("rows") or [])]
+
     def market_status(self) -> dict:
         return self._get(f"{DATA_BASE}/marketStatus")
 
@@ -230,6 +315,10 @@ def _cli() -> int:
         print(json.dumps(fc.positions(), indent=2))
     elif cmd == "quotes":
         print(json.dumps(fc.quotes(sys.argv[2:] or ["NSE:SBIN-EQ"]), indent=2))
+    elif cmd == "expiries":   # expiries SYMBOL FROM TO
+        print(json.dumps(fc.expiry_dates(*sys.argv[2:5]), indent=2))
+    elif cmd == "contracts":  # contracts SYMBOL EXPIRY_DATE
+        print(json.dumps(fc.expired_contracts(*sys.argv[2:4]), indent=2))
     elif cmd == "status":
         print(json.dumps(fc.market_status(), indent=2))
     else:

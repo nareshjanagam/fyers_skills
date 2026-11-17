@@ -128,6 +128,8 @@ for users who opt out of the conversational default: **`references/auth.md`**.
 |---|---|---|
 | Set up / install the skill, venv, dependencies | `references/setup.md` | — |
 | Login / token / OAuth / refresh | `references/auth.md` | `scripts/fyers_login.py` |
+| Screeners (standard, candlestick, technical scans; config catalogue) | `references/screeners.md` | `scripts/fyers_client.py` (`screeners_config`, `screeners_standard`, `screeners_candlestick`, `screeners_technical`) |
+| Expired / historical F&O contracts (expiry dates, expired option & future candles, OI, greeks) | `references/market-data.md` | `scripts/fyers_client.py` (`expiry_dates`, `expired_contracts`, `expired_fo_rows`) |
 | Quotes, depth, history, market status | `references/market-data.md` | `scripts/fyers_client.py` |
 | Option chain, greeks, IV, PCR, expiry selection, ATM/ITM/OTM, max pain | `references/market-data.md` | `scripts/fyers_client.py` + `scripts/option_chain.py` |
 | Place / modify / cancel / GTT / smart orders, positions | `references/orders.md` | `scripts/fyers_client.py` |
