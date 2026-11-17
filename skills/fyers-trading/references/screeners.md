@@ -8,14 +8,15 @@ Python: `fyers-apiv3>=3.2.1` has `screeners_config/standard/candlestick/technica
 `screeners_standard(...)`, `screeners_candlestick(id)`, `screeners_technical(id)` (rows as dicts).
 
 ## Workflow
-1. `screeners_config()` once. It lists 111 standard, 23 candlestick and 6 technical screeners with the
-   parameters each accepts (`supported_params`), 118 columns grouped as `column_groups.equity|fno|commodity`,
+1. `screeners_config()` once. Keys: `screeners_standard` (111), `screeners_candlestick` (23), `screeners_technical` (6),
+   each entry with `id`, `supported_params`, `default_universe`, `allowed_timeframes`...; 118 columns grouped as `column_groups.equity|fno|commodity`,
    `universes` (cash ids like `iw001` Nifty 50, default `iw010`), futures/options universes (`fw001`, `ow001`...),
    16 timeframes (`t0_1min` ... `alltime`, `c1_week`...), `option_types` (CE/PE) and `expiries` (epoch values).
 2. Run a screener with only parameters its config entry lists.
 
 ## Standard screeners
-`GET /screeners/standard?screener_id=top_gainers&fields=ltp,chp&universe=iw001&order_by=chp&order=desc`
+`GET /screeners/standard?screener_id=top_gainers&fields=t0_close_ltp,t0_per_change&universe=iw001&order_by=t0_per_change&order=desc`
+(field and order_by ids are column ids from `config.columns`, e.g. `t0_close_ltp`, `t0_per_change`; plain names like `ltp` return 400)
 - `screener_id` required. Optional: `fields` (max 10, comma separated; `symbolticker` is always returned and
   not counted; **omitted `fields` returns only symbolticker**), `universe`, `timeframe`, `order_by`,
   `order` (`asc|desc`), `expiry` (epoch from config, only for futures/options universes), `option_type`.
@@ -35,3 +36,11 @@ Technical screeners scan the Nifty 500 universe.
 ## Errors and limits
 401 code -16 (token), 405 `method not allowed; use GET`, 400 code -50 for bad/missing parameters, 404 for a
 wrong path. Limits: Standard plan 50 requests/day; Prime 10/s and 500/min. Do not poll screeners in a loop.
+
+## Example (verified live)
+```python
+fc = FyersClient()
+fc.screeners_standard("top_gainers", fields=["t0_close_ltp", "t0_per_change"], universe="iw001",
+                      order_by="t0_per_change", order="desc")   # [{'symbolticker': 'NSE:...', 't0_close_ltp': ..., ...}]
+fc.screeners_candlestick("dragonfly_doji"); fc.screeners_technical("macd_crossed_above_signal_line")
+```
